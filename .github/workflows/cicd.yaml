@@ -1,0 +1,145 @@
+name: CI/CD Pipeline
+#  sample CI/CD pipeline for a Next.js application using GitHub Actions.
+#  This pipeline includes steps for building, testing, scanning, and deploying the application.
+#  It also integrates Docker for containerization and Slack for notifications.
+#  The pipeline is triggered on pushes and pull requests to any branch.
+#  The deployment to production is manual and can be triggered via the GitHub UI.
+#  The pipeline uses Node.js 20 for building, and testing the application.
+#  It includes steps for linting, auditing dependencies, and scanning Docker images.
+#  The pipeline uses Docker Hub for storing Docker images and Slack for notifications.
+#  The deployment to staging and production environments is done via SSH.
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: your-dockerhub-username/my-nextjs-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Next.js App
+        run: npm run build
+
+      - name: Notify Slack - Build Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: '{"text":"✅ Build passed on ${{ github.ref_name }}"}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm test
+
+  scan:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run lint
+      - run: npm audit --audit-level=high
+      - name: Docker scan
+        run: |
+          docker build -t app-temp .
+          docker scan app-temp || true
+
+  docker:
+    needs: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
+          docker push $IMAGE_NAME:$IMAGE_TAG
+          docker push $IMAGE_NAME:latest
+
+      - name: Notify Slack - Docker Push
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: '{"text":"🐳 Docker image pushed to Docker Hub"}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  deploy_staging:
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and deploy to staging
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_KEY }}
+          script: |
+            docker pull $IMAGE_NAME:latest
+            docker stop nextjs-staging || true
+            docker rm nextjs-staging || true
+            docker run -d --name nextjs-staging -p 3000:3000 $IMAGE_NAME:latest
+
+      - name: Notify Slack - Staging Deploy
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: '{"text":"🚀 Deployed to staging"}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  deploy_production:
+    needs: deploy_staging
+    if: github.event_name == 'workflow_dispatch'
+    environment:
+      name: production
+      url: https://your-prod-url.com
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and deploy to production
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_KEY }}
+          script: |
+            docker pull $IMAGE_NAME:latest
+            docker stop nextjs-prod || true
+            docker rm nextjs-prod || true
+            docker run -d --name nextjs-prod -p 3000:3000 $IMAGE_NAME:latest
+
+      - name: Notify Slack - Prod Deploy
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: '{"text":"🎉 Production deployment completed!"}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
