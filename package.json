@@ -6,7 +6,10 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint:eslint": "next lint",
+    "lint:prettier": "prettier --check .",
+    "lint:types": "tsc --noEmit",
+    "test": "next test"
   },
   "dependencies": {
     "@supabase/ssr": "^0.6.1",
